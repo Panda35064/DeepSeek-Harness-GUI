@@ -2,7 +2,7 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -25,6 +25,39 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DEFAULT_REPO: &str = r"D:\Program Files\Dev\deepseek-harness";
 const NODE_VERSION: &str = "v20.20.2";
 const NODE_ARCHIVE: &str = "node-v20.20.2-win-x64.zip";
+
+#[derive(Clone, Copy, PartialEq)]
+enum NodeSource {
+    Official,
+    Mirror,
+}
+
+impl NodeSource {
+    fn label(self) -> &'static str {
+        match self {
+            NodeSource::Official => "官方源",
+            NodeSource::Mirror => "镜像源",
+        }
+    }
+
+    fn node_url(self, version: &str, archive: &str) -> String {
+        match self {
+            NodeSource::Official => {
+                format!("https://nodejs.org/download/release/{version}/{archive}")
+            }
+            NodeSource::Mirror => {
+                format!("https://npmmirror.com/mirrors/node/{version}/{archive}")
+            }
+        }
+    }
+
+    fn npm_registry(self) -> &'static str {
+        match self {
+            NodeSource::Official => "https://registry.npmjs.org",
+            NodeSource::Mirror => "https://registry.npmmirror.com",
+        }
+    }
+}
 
 #[derive(Clone, serde::Serialize)]
 struct ProgressPayload {
@@ -457,18 +490,71 @@ fn run_capture(mut cmd: Command) -> std::io::Result<Output> {
     cmd.output()
 }
 
-fn run_powershell(command: &str) -> std::io::Result<Output> {
+fn run_powershell_progress(
+    command: &str,
+    target: &ProgressTarget<'_>,
+    label: &str,
+) -> std::io::Result<Output> {
     let mut cmd = Command::new("powershell.exe");
     cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"])
         .arg(command);
-    run_capture(cmd)
+
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.stdin(Stdio::null());
+
+    let err_path = std::env::temp_dir().join(format!("dsh-node-{}.err", std::process::id()));
+    let err_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&err_path)?;
+    cmd.stderr(Stdio::from(err_file));
+
+    let mut child = cmd.stdout(Stdio::piped()).spawn()?;
+    let mut out_buf = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if let Some(pct) = trimmed.strip_prefix("PROGRESS:") {
+                        if let Ok(n) = pct.trim().parse::<u8>() {
+                            let percent = (5u16 + (n as u16) * 35 / 100).min(40) as u8;
+                            report_progress(
+                                target,
+                                percent,
+                                &format!("正在从{label}下载 Node.js 运行环境... {n}%"),
+                            );
+                        }
+                    } else if !trimmed.is_empty() {
+                        out_buf.push(trimmed.to_string());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    let stderr = fs::read(&err_path).unwrap_or_default();
+    let _ = fs::remove_file(&err_path);
+    Ok(Output {
+        status,
+        stdout: out_buf.join("\n").into_bytes(),
+        stderr,
+    })
 }
 
 fn powershell_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn ensure_node(target: &ProgressTarget<'_>) -> Result<PathBuf, String> {
+fn ensure_node(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<PathBuf, String> {
     let force_bootstrap = env::var_os("DSH_FORCE_NODE_BOOTSTRAP").is_some();
     if !force_bootstrap {
         if let Some(node) = find_node() {
@@ -482,21 +568,16 @@ fn ensure_node(target: &ProgressTarget<'_>) -> Result<PathBuf, String> {
     let runtime_dir = runtime_root.join("node");
     let archive = runtime_root.join(NODE_ARCHIVE);
     let staging = runtime_root.join("node-staging");
-    let urls = [
-        (
-            "官方源",
-            format!(
-                "https://nodejs.org/download/release/{NODE_VERSION}/{NODE_ARCHIVE}"
-            ),
-        ),
-        (
-            "镜像源",
-            format!("https://npmmirror.com/mirrors/node/{NODE_VERSION}/{NODE_ARCHIVE}"),
-        ),
-    ];
+    let sources = if preferred == NodeSource::Official {
+        [NodeSource::Official, NodeSource::Mirror]
+    } else {
+        [NodeSource::Mirror, NodeSource::Official]
+    };
 
     report_progress(target, 3, "未检测到可用的 Node.js，正在下载运行环境...");
-    for (label, url) in urls {
+    for source in sources {
+        let label = source.label();
+        let url = source.node_url(NODE_VERSION, NODE_ARCHIVE);
         report_progress(
             target,
             4,
@@ -507,7 +588,37 @@ $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
 Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
-Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+Add-Type -AssemblyName System.Net.Http
+$client = New-Object System.Net.Http.HttpClient
+try {
+  $response = $client.GetAsync($url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+  if (-not $response.IsSuccessStatusCode) { throw "HTTP $([int]$response.StatusCode)" }
+  $total = $response.Content.Headers.ContentLength
+  $stream = $response.Content.ReadAsStreamAsync().Result
+  $fs = [System.IO.File]::Create($archive)
+  $buffer = New-Object byte[] 81920
+  $done = [long]0
+  $lastPct = -1
+  try {
+    while ($true) {
+      $read = $stream.Read($buffer, 0, $buffer.Length)
+      if ($read -le 0) { break }
+      $fs.Write($buffer, 0, $read)
+      $done += $read
+      if ($total -gt 0) {
+        $pct = [int](($done * 100) / $total)
+        if ($pct -ne $lastPct) { $lastPct = $pct; Write-Output "PROGRESS:$pct" }
+      }
+    }
+  } finally {
+    $fs.Dispose()
+    $stream.Dispose()
+    $response.Dispose()
+  }
+} finally {
+  $client.Dispose()
+}
 Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
 $root = Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1
 if ($null -eq $root -or -not (Test-Path -LiteralPath (Join-Path $root.FullName 'node.exe'))) {
@@ -528,12 +639,12 @@ Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
             powershell_literal(&staging.to_string_lossy()),
             script
         );
-        let output = run_powershell(&command)
+        let output = run_powershell_progress(&command, target, label)
         .map_err(|e| format!("下载 Node.js 失败：{e}"))?;
         if output.status.success() && runtime_node_path().is_file() {
             if let Some(node) = find_node() {
                 if find_npm_cli().is_some() {
-                    report_progress(target, 6, "Node.js 运行环境准备完成");
+                    report_progress(target, 42, "Node.js 运行环境准备完成");
                     return Ok(node);
                 }
             }
@@ -549,9 +660,9 @@ Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
     Err("无法下载 Node.js 运行环境，请检查网络连接后重试".to_string())
 }
 
-fn install_git(target: &ProgressTarget<'_>) -> Result<(), String> {
+fn install_git(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<(), String> {
     let git = find_git().ok_or("未找到 Git，无法从源码安装")?;
-    let node = ensure_node(target)?;
+    let node = ensure_node(target, preferred)?;
     let pnpm = find_pnpm().ok_or("未找到 pnpm，无法从源码安装")?;
 
     let repo = Path::new(DEFAULT_REPO);
@@ -618,19 +729,26 @@ fn install_git(target: &ProgressTarget<'_>) -> Result<(), String> {
     Ok(())
 }
 
-fn install_auto(target: &ProgressTarget<'_>) -> Result<(), String> {
-    let node = ensure_node(target)?;
+fn install_auto(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<(), String> {
+    let node = ensure_node(target, preferred)?;
     let npm_cli = find_npm_cli().ok_or("未找到 npm 组件，无法自动安装")?;
 
-    let registries = [
-        ("官方 npm 源", "https://registry.npmjs.org"),
-        ("镜像 npm 源", "https://registry.npmmirror.com"),
-    ];
+    let registries = if preferred == NodeSource::Official {
+        [
+            ("官方 npm 源", NodeSource::Official.npm_registry()),
+            ("镜像 npm 源", NodeSource::Mirror.npm_registry()),
+        ]
+    } else {
+        [
+            ("镜像 npm 源", NodeSource::Mirror.npm_registry()),
+            ("官方 npm 源", NodeSource::Official.npm_registry()),
+        ]
+    };
     let mut installed = false;
     for (index, (label, registry)) in registries.iter().enumerate() {
         report_progress(
             target,
-            8 + (index as u8 * 6),
+            45 + (index as u8 * 7),
             &format!("正在从{label}下载并安装 DeepSeek Harness..."),
         );
         let out = run_capture({
@@ -652,12 +770,12 @@ fn install_auto(target: &ProgressTarget<'_>) -> Result<(), String> {
             installed = true;
             break;
         }
-        report_progress(target, 14 + (index as u8 * 6), &format!("{label}安装失败，准备重试..."));
+        report_progress(target, 52 + (index as u8 * 7), &format!("{label}安装失败，准备重试..."));
     }
 
     if !installed {
         report_progress(target, 20, "npm 安装未成功，切换到源码安装...");
-        return install_git(target);
+        return install_git(target, preferred);
     }
 
     let prefix_out = run_capture({
@@ -669,7 +787,7 @@ fn install_auto(target: &ProgressTarget<'_>) -> Result<(), String> {
     let prefix = String::from_utf8_lossy(&prefix_out.stdout).trim().to_string();
     if prefix.is_empty() {
         report_progress(target, 20, "npm 配置读取异常，切换到源码安装...");
-        return install_git(target);
+        return install_git(target, preferred);
     }
 
     let pkg_root = PathBuf::from(&prefix)
@@ -678,7 +796,7 @@ fn install_auto(target: &ProgressTarget<'_>) -> Result<(), String> {
         .join("dsh");
     if !pkg_root.join("lib").join("bin.js").is_file() {
         report_progress(target, 20, "npm 安装完成但未找到入口，切换到源码安装...");
-        return install_git(target);
+        return install_git(target, preferred);
     }
 
     save_config(DshKind::Npm, &pkg_root).map_err(|e| format!("保存配置失败：{e}"))?;
@@ -710,9 +828,13 @@ fn pick_manual(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn dsh_install_auto(app: AppHandle) -> Result<(), String> {
+fn dsh_install_auto(app: AppHandle, source: Option<String>) -> Result<(), String> {
+    let preferred = match source.as_deref() {
+        Some("mirror") => NodeSource::Mirror,
+        _ => NodeSource::Official,
+    };
     let handle = app.clone();
-    thread::spawn(move || match install_auto(&ProgressTarget::App(&handle)) {
+    thread::spawn(move || match install_auto(&ProgressTarget::App(&handle), preferred) {
         Ok(()) => continue_bootstrap(handle),
         Err(e) => emit_error(&handle, &e),
     });
@@ -823,8 +945,16 @@ fn main() {
         if std::env::args().any(|arg| arg == "--force-node-bootstrap") {
             std::env::set_var("DSH_FORCE_NODE_BOOTSTRAP", "1");
         }
-        println!("DeepSeek Harness automatic installation test");
-        match install_auto(&ProgressTarget::Console) {
+        let preferred = if std::env::args().any(|arg| arg == "--source-mirror") {
+            NodeSource::Mirror
+        } else {
+            NodeSource::Official
+        };
+        println!(
+            "DeepSeek Harness automatic installation test (source: {})",
+            preferred.label()
+        );
+        match install_auto(&ProgressTarget::Console, preferred) {
             Ok(()) => {
                 println!("PASS: automatic installation completed");
                 std::process::exit(0);

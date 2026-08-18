@@ -62,6 +62,17 @@
       .install-card h2 { font-size: 16px; color: #0f172a; margin-bottom: 8px; font-weight: 600; }
       .install-card p { font-size: 13px; color: #64748b; line-height: 1.7; margin-bottom: 22px; }
       .btns { display: flex; gap: 12px; justify-content: center; }
+      .source-row { margin-top: 2px; }
+      .source-row .source-title { font-size: 13px; color: #475569; font-weight: 600; margin-bottom: 14px; }
+      .source-row button { display: block; width: 100%; margin: 0 auto 6px; }
+      .source-row .source-desc {
+        font-size: 11.5px;
+        color: #94a3b8;
+        line-height: 1.55;
+        margin: -6px auto 16px !important;
+        max-width: 300px;
+      }
+      .source-row .source-back { margin-top: 4px; }
       button {
         padding: 10px 18px;
         border-radius: 12px;
@@ -104,6 +115,8 @@
         .step { color: #64748b; }
         .install-card h2 { color: #f1f5f9; }
         .install-card p { color: #94a3b8; }
+        .source-row .source-title { color: #cbd5e1; }
+        .source-row .source-desc { color: #64748b; }
       }
     </style>
   </head>
@@ -127,6 +140,14 @@
           <button id="btnAuto" class="primary">自动安装</button>
           <button id="btnManual" class="ghost">手动选择路径</button>
         </div>
+        <div class="source-row hidden" id="sourceRow">
+          <p class="source-title" id="sourceTitle">请选择 Node.js 下载源：</p>
+          <button id="btnOfficial" class="primary">官方源</button>
+          <p class="source-desc" id="officialDesc">从 nodejs.org 官方服务器下载，国际网络下速度更快；下载失败会自动切换到镜像源。</p>
+          <button id="btnMirror" class="ghost">镜像源</button>
+          <p class="source-desc" id="mirrorDesc">从 npmmirror.com 国内镜像下载，国内网络更稳定；下载失败会自动切换到官方源。</p>
+          <button id="btnSourceBack" class="ghost source-back">返回</button>
+        </div>
       </div>
     </div>
     <script>
@@ -140,6 +161,10 @@
         var hint = document.getElementById('hintText');
         var btnAuto = document.getElementById('btnAuto');
         var btnManual = document.getElementById('btnManual');
+        var sourceRow = document.getElementById('sourceRow');
+        var btnOfficial = document.getElementById('btnOfficial');
+        var btnMirror = document.getElementById('btnMirror');
+        var btnSourceBack = document.getElementById('btnSourceBack');
 
         var isChinese = /^zh(?:-|$)/i.test(navigator.language || '');
         var lang = isChinese ? 'zh' : 'en';
@@ -151,6 +176,12 @@
             choose: '未在默认安装路径或环境变量中找到 dsh。<br />请选择安装方式继续：',
             auto: '自动安装',
             manual: '手动选择路径',
+            sourceTitle: '请选择 Node.js 下载源：',
+            official: '官方源',
+            mirror: '镜像源',
+            officialDesc: '从 nodejs.org 官方服务器下载，国际网络下速度更快；下载失败会自动切换到镜像源。',
+            mirrorDesc: '从 npmmirror.com 国内镜像下载，国内网络更稳定；下载失败会自动切换到官方源。',
+            back: '返回',
             installHint: '首次安装可能需要几分钟，请勿关闭窗口',
             preparing: '正在准备自动安装...',
             done: '安装完成，正在启动服务...',
@@ -163,6 +194,12 @@
             choose: 'dsh was not found in the default path or environment variables.<br />Choose an installation method to continue:',
             auto: 'Install automatically',
             manual: 'Choose a path',
+            sourceTitle: 'Choose the Node.js download source:',
+            official: 'Official source',
+            mirror: 'Mirror source',
+            officialDesc: 'Downloads from the official nodejs.org servers. Faster on international networks; falls back to the mirror source automatically on failure.',
+            mirrorDesc: 'Downloads from the npmmirror.com mirror. More stable on networks in China; falls back to the official source automatically on failure.',
+            back: 'Back',
             installHint: 'The first installation may take a few minutes. Please keep this window open.',
             preparing: 'Preparing automatic installation...',
             done: 'Installation complete. Starting the service...',
@@ -177,6 +214,12 @@
         document.querySelector('#installCard > p').innerHTML = copy.choose;
         btnAuto.textContent = copy.auto;
         btnManual.textContent = copy.manual;
+        document.getElementById('sourceTitle').textContent = copy.sourceTitle;
+        btnOfficial.textContent = copy.official;
+        btnMirror.textContent = copy.mirror;
+        document.getElementById('officialDesc').textContent = copy.officialDesc;
+        document.getElementById('mirrorDesc').textContent = copy.mirrorDesc;
+        btnSourceBack.textContent = copy.back;
 
         function localizeProgress(message) {
           if (lang === 'zh' || !message) return message;
@@ -184,6 +227,14 @@
             ['正在检测运行环境', 'Checking the environment'],
             ['未检测到安装', 'No installation found'],
             ['已找到 DeepSeek Harness，正在启动服务', 'DeepSeek Harness found. Starting the service'],
+            ['未检测到可用的 Node.js，正在下载运行环境', 'Node.js was not found. Downloading the runtime'],
+            ['正在从官方源下载 Node.js 运行环境', 'Downloading Node.js runtime from the official source'],
+            ['正在从镜像源下载 Node.js 运行环境', 'Downloading Node.js runtime from the mirror source'],
+            ['Node.js 运行环境准备完成', 'Node.js runtime is ready'],
+            ['正在从官方 npm 源下载并安装 DeepSeek Harness', 'Downloading and installing DeepSeek Harness from the official npm registry'],
+            ['正在从镜像 npm 源下载并安装 DeepSeek Harness', 'Downloading and installing DeepSeek Harness from the mirror npm registry'],
+            ['官方源下载失败', 'Official source download failed'],
+            ['镜像源下载失败', 'Mirror source download failed'],
             ['正在下载并安装 DeepSeek Harness（npm 官方包）', 'Downloading and installing DeepSeek Harness (official npm package)'],
             ['npm 安装未成功，切换到源码安装', 'npm installation failed. Switching to source installation'],
             ['npm 配置读取异常，切换到源码安装', 'Could not read npm configuration. Switching to source installation'],
@@ -213,7 +264,8 @@
             ['未找到 pnpm，无法从源码安装', 'pnpm was not found, so source installation is unavailable'],
             ['npm 安装执行失败', 'npm installation failed'],
             ['pnpm install 失败', 'pnpm install failed'],
-            ['pnpm build 失败', 'pnpm build failed']
+            ['pnpm build 失败', 'pnpm build failed'],
+            ['无法下载 Node.js 运行环境', 'Could not download the Node.js runtime']
           ];
           for (var i = 0; i < translations.length; i++) {
             if (message.indexOf(translations[i][0]) === 0) return translations[i][1] + message.slice(translations[i][0].length);
@@ -254,9 +306,11 @@
             showError((e.payload || {}).message);
           }).catch(function () {});
 
-          btnAuto.addEventListener('click', function () {
+          function startAutoInstall(source) {
             btnAuto.disabled = true;
             btnManual.disabled = true;
+            btnOfficial.disabled = true;
+            btnMirror.disabled = true;
             err.textContent = '';
             card.classList.add('hidden');
             title.classList.remove('hidden');
@@ -267,13 +321,24 @@
             hint.classList.remove('failure');
             hint.classList.remove('hidden');
             err.classList.add('hidden');
-            tauri.core.invoke('dsh_install_auto').catch(showError);
+            tauri.core.invoke('dsh_install_auto', { source: source }).catch(showError);
+          }
+
+          btnAuto.addEventListener('click', function () {
+            document.querySelector('#installCard .btns').classList.add('hidden');
+            sourceRow.classList.remove('hidden');
           });
           btnManual.addEventListener('click', function () {
             btnAuto.disabled = true;
             btnManual.disabled = true;
             err.textContent = '';
             tauri.core.invoke('dsh_pick_manual').catch(showError);
+          });
+          btnOfficial.addEventListener('click', function () { startAutoInstall('official'); });
+          btnMirror.addEventListener('click', function () { startAutoInstall('mirror'); });
+          btnSourceBack.addEventListener('click', function () {
+            sourceRow.classList.add('hidden');
+            document.querySelector('#installCard .btns').classList.remove('hidden');
           });
         } else {
           showInstall();

@@ -52,9 +52,42 @@ jobs:
           name: DeepSeek-Harness-GUI-windows-installer
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
 
+      - name: Prepare bilingual release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $notes = @'
+          ## DeepSeek Harness GUI
+
+          ### 更新内容 / What's New
+
+          - 自动安装前可选择 Node.js 下载源（官方源 / 镜像源），安装时显示实时下载进度百分比。
+            Choose the Node.js download source (official / mirror) before automatic installation, with a live download progress percentage.
+          - 所选源不可用时自动切换到另一源继续安装。
+            Automatically falls back to the other source if the selected one is unavailable.
+          - 未检测到 Node.js 时自动下载便携版运行环境，无需手动安装。
+            Automatically downloads a portable Node.js runtime when it is missing; no manual installation required.
+
+          ### 修复 / Fixes
+
+          - 修复自动安装卡在“正在准备自动安装...”无法继续的问题。
+            Fixed automatic installation getting stuck at "Preparing automatic installation...".
+          - 修复失败原因被隐藏、界面停留在加载状态的问题。
+            Fixed hidden failure reasons that left the UI stuck on the loading screen.
+          - 修复 Node.js 便携版解压复制与临时文件清理误报失败的问题。
+            Fixed Node.js portable runtime copy and temporary file cleanup reporting false failures.
+
+          ### 安装 / Installation
+
+          下载并运行 `*-setup.exe`，安装器会自动处理依赖（Node.js、npm 等），无需提前安装。
+          Download and run `*-setup.exe`. The installer handles dependencies (Node.js, npm, etc.) automatically.
+          '@
+          Set-Content -Path release-notes.md -Value $notes -Encoding utf8
+
       - name: Publish installer to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: src-tauri/target/release/bundle/nsis/*-setup.exe
-          generate_release_notes: true
+          body-file: release-notes.md
+          generate_release_notes: false

@@ -236,13 +236,6 @@
             ['官方源下载失败', 'Official source download failed'],
             ['镜像源下载失败', 'Mirror source download failed'],
             ['正在下载并安装 DeepSeek Harness（npm 官方包）', 'Downloading and installing DeepSeek Harness (official npm package)'],
-            ['npm 安装未成功，切换到源码安装', 'npm installation failed. Switching to source installation'],
-            ['npm 配置读取异常，切换到源码安装', 'Could not read npm configuration. Switching to source installation'],
-            ['npm 安装完成但未找到入口，切换到源码安装', 'npm installation completed but no entry point was found. Switching to source installation'],
-            ['正在克隆 DeepSeek Harness 源码', 'Cloning DeepSeek Harness source'],
-            ['正在安装依赖（pnpm install）', 'Installing dependencies (pnpm install)'],
-            ['正在构建（pnpm build）', 'Building (pnpm build)'],
-            ['源码安装完成', 'Source installation complete'],
             ['安装完成，正在启动服务', copy.done],
             ['服务已就绪', 'Service is ready'],
             ['服务启动超时，请查看日志确认状态', 'Service startup timed out. Check the logs for details'],
@@ -260,12 +253,11 @@
           var translations = [
             ['未找到 Node.js', 'Node.js was not found'],
             ['未找到 npm 组件，无法自动安装', 'The npm component was not found, so automatic installation is unavailable'],
-            ['未找到 Git，无法从源码安装', 'Git was not found, so source installation is unavailable'],
-            ['未找到 pnpm，无法从源码安装', 'pnpm was not found, so source installation is unavailable'],
             ['npm 安装执行失败', 'npm installation failed'],
-            ['pnpm install 失败', 'pnpm install failed'],
-            ['pnpm build 失败', 'pnpm build failed'],
-            ['无法下载 Node.js 运行环境', 'Could not download the Node.js runtime']
+            ['无法下载 Node.js 运行环境', 'Could not download the Node.js runtime'],
+            ['npm 安装失败：官方 npm 源和镜像源均不可用', 'npm installation failed: both the official npm registry and the mirror are unavailable'],
+            ['读取 npm 配置失败', 'Failed to read npm configuration'],
+            ['npm 安装完成但未找到 dsh 入口', 'npm installation completed but the dsh entry point was not found']
           ];
           for (var i = 0; i < translations.length; i++) {
             if (message.indexOf(translations[i][0]) === 0) return translations[i][1] + message.slice(translations[i][0].length);

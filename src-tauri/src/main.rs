@@ -198,45 +198,6 @@ fn find_npm_cli() -> Option<PathBuf> {
     cli.is_file().then_some(cli)
 }
 
-fn find_git() -> Option<PathBuf> {
-    let candidates = [
-        r"D:\Program Files\Dev\Git\cmd\git.exe",
-        r"C:\Program Files\Git\cmd\git.exe",
-    ];
-    for c in candidates {
-        let p = PathBuf::from(c);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    find_in_path("git.exe")
-}
-
-fn find_pnpm() -> Option<PathBuf> {
-    let candidates = [
-        r"D:\Program Files\Dev\Node.js\node_modules\pnpm\bin\pnpm.cjs",
-        r"C:\Program Files\nodejs\node_modules\pnpm\bin\pnpm.cjs",
-    ];
-    for c in candidates {
-        let p = PathBuf::from(c);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    if let Some(appdata) = env::var_os("APPDATA") {
-        let p = PathBuf::from(appdata)
-            .join("npm")
-            .join("node_modules")
-            .join("pnpm")
-            .join("bin")
-            .join("pnpm.cjs");
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
-}
-
 fn repo_entry(root: &Path) -> Option<PathBuf> {
     let lib = root.join("apps").join("cli").join("lib").join("bin.js");
     if lib.is_file() {
@@ -660,75 +621,6 @@ Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
     Err("无法下载 Node.js 运行环境，请检查网络连接后重试".to_string())
 }
 
-fn install_git(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<(), String> {
-    let git = find_git().ok_or("未找到 Git，无法从源码安装")?;
-    let node = ensure_node(target, preferred)?;
-    let pnpm = find_pnpm().ok_or("未找到 pnpm，无法从源码安装")?;
-
-    let repo = Path::new(DEFAULT_REPO);
-    if repo_entry(repo).is_none() {
-        if repo.exists() {
-            return Err(format!(
-                "{DEFAULT_REPO} 已存在但不是有效的 DeepSeek Harness 仓库，请手动处理"
-            ));
-        }
-        report_progress(target, 25, "正在克隆 DeepSeek Harness 源码...");
-        let out = run_capture({
-            let mut c = Command::new(&git);
-            c.args([
-                "clone",
-                "--depth",
-                "1",
-                "https://github.com/deepseek-ai/deepseek-harness.git",
-                DEFAULT_REPO,
-            ]);
-            c
-        })
-        .map_err(|e| format!("克隆执行失败：{e}"))?;
-        if !out.status.success() {
-            let msg = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
-                "克隆失败：{}",
-                msg.chars().take(300).collect::<String>()
-            ));
-        }
-    }
-
-    report_progress(target, 45, "正在安装依赖（pnpm install）...");
-    let out = run_capture({
-        let mut c = Command::new(&node);
-        c.arg(&pnpm).arg("install").current_dir(repo);
-        c
-    })
-    .map_err(|e| format!("pnpm install 执行失败：{e}"))?;
-    if !out.status.success() {
-        let msg = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "pnpm install 失败：{}",
-            msg.chars().take(300).collect::<String>()
-        ));
-    }
-
-    report_progress(target, 65, "正在构建（pnpm build）...");
-    let out = run_capture({
-        let mut c = Command::new(&node);
-        c.arg(&pnpm).args(["run", "build"]).current_dir(repo);
-        c
-    })
-    .map_err(|e| format!("构建执行失败：{e}"))?;
-    if !out.status.success() {
-        let msg = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "构建失败：{}",
-            msg.chars().take(300).collect::<String>()
-        ));
-    }
-
-    save_config(DshKind::Repo, repo).map_err(|e| format!("保存配置失败：{e}"))?;
-    report_progress(target, 85, "源码安装完成");
-    Ok(())
-}
-
 fn install_auto(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<(), String> {
     let node = ensure_node(target, preferred)?;
     let npm_cli = find_npm_cli().ok_or("未找到 npm 组件，无法自动安装")?;
@@ -774,8 +666,9 @@ fn install_auto(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<()
     }
 
     if !installed {
-        report_progress(target, 20, "npm 安装未成功，切换到源码安装...");
-        return install_git(target, preferred);
+        return Err(
+            "npm 安装失败：官方 npm 源和镜像源均不可用，请检查网络连接后重试".to_string(),
+        );
     }
 
     let prefix_out = run_capture({
@@ -786,8 +679,7 @@ fn install_auto(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<()
     .map_err(|e| format!("读取 npm 配置失败：{e}"))?;
     let prefix = String::from_utf8_lossy(&prefix_out.stdout).trim().to_string();
     if prefix.is_empty() {
-        report_progress(target, 20, "npm 配置读取异常，切换到源码安装...");
-        return install_git(target, preferred);
+        return Err("读取 npm 配置失败，无法完成自动安装".to_string());
     }
 
     let pkg_root = PathBuf::from(&prefix)
@@ -795,8 +687,7 @@ fn install_auto(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<()
         .join("@deepseek-ai")
         .join("dsh");
     if !pkg_root.join("lib").join("bin.js").is_file() {
-        report_progress(target, 20, "npm 安装完成但未找到入口，切换到源码安装...");
-        return install_git(target, preferred);
+        return Err("npm 安装完成但未找到 dsh 入口，无法完成自动安装".to_string());
     }
 
     save_config(DshKind::Npm, &pkg_root).map_err(|e| format!("保存配置失败：{e}"))?;

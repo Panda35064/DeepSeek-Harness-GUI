@@ -55,6 +55,9 @@
         color: #a3adbd;
         min-height: 17px;
       }
+      .hint.failure {
+        color: #dc2626;
+      }
       .install-card { margin-top: 6px; }
       .install-card h2 { font-size: 16px; color: #0f172a; margin-bottom: 8px; font-weight: 600; }
       .install-card p { font-size: 13px; color: #64748b; line-height: 1.7; margin-bottom: 22px; }
@@ -115,6 +118,7 @@
         <div class="ring"></div>
         <p class="step" id="stepText">正在检测运行环境...</p>
         <p class="hint hidden" id="hintText"></p>
+        <p class="error hidden" id="errorText"></p>
       </div>
       <div class="install-card hidden" id="installCard">
         <h2>未检测到 DeepSeek Harness</h2>
@@ -123,7 +127,6 @@
           <button id="btnAuto" class="primary">自动安装</button>
           <button id="btnManual" class="ghost">手动选择路径</button>
         </div>
-        <p class="error" id="errorText"></p>
       </div>
     </div>
     <script>
@@ -219,8 +222,14 @@
         }
 
         function showError(msg) {
-          err.textContent = localizeError(msg);
-          hint.classList.add('hidden');
+          var message = localizeError(msg);
+          step.textContent = copy.failed;
+          hint.textContent = message;
+          hint.classList.remove('hidden');
+          hint.classList.add('failure');
+          err.classList.add('hidden');
+          wrap.classList.remove('hidden');
+          card.classList.add('hidden');
           btnAuto.disabled = false;
           btnManual.disabled = false;
         }
@@ -255,7 +264,9 @@
             wrap.classList.remove('hidden');
             step.textContent = copy.preparing;
             hint.textContent = copy.installHint;
+            hint.classList.remove('failure');
             hint.classList.remove('hidden');
+            err.classList.add('hidden');
             tauri.core.invoke('dsh_install_auto').catch(showError);
           });
           btnManual.addEventListener('click', function () {

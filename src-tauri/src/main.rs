@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,13 +30,15 @@ const NODE_ARCHIVE: &str = "node-v20.20.2-win-x64.zip";
 enum NodeSource {
     Official,
     Mirror,
+    Tencent,
 }
 
 impl NodeSource {
     fn label(self) -> &'static str {
         match self {
             NodeSource::Official => "官方源",
-            NodeSource::Mirror => "镜像源",
+            NodeSource::Mirror => "阿里镜像源",
+            NodeSource::Tencent => "腾讯镜像源",
         }
     }
 
@@ -48,6 +50,9 @@ impl NodeSource {
             NodeSource::Mirror => {
                 format!("https://npmmirror.com/mirrors/node/{version}/{archive}")
             }
+            NodeSource::Tencent => {
+                format!("https://mirrors.cloud.tencent.com/nodejs-release/{version}/{archive}")
+            }
         }
     }
 
@@ -55,6 +60,7 @@ impl NodeSource {
         match self {
             NodeSource::Official => "https://registry.npmjs.org",
             NodeSource::Mirror => "https://registry.npmmirror.com",
+            NodeSource::Tencent => "https://mirrors.cloud.tencent.com/npm",
         }
     }
 }
@@ -529,10 +535,10 @@ fn ensure_node(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<Pat
     let runtime_dir = runtime_root.join("node");
     let archive = runtime_root.join(NODE_ARCHIVE);
     let staging = runtime_root.join("node-staging");
-    let sources = if preferred == NodeSource::Official {
-        [NodeSource::Official, NodeSource::Mirror]
-    } else {
-        [NodeSource::Mirror, NodeSource::Official]
+    let sources = match preferred {
+        NodeSource::Official => [NodeSource::Official, NodeSource::Mirror, NodeSource::Tencent],
+        NodeSource::Mirror => [NodeSource::Mirror, NodeSource::Official, NodeSource::Tencent],
+        NodeSource::Tencent => [NodeSource::Tencent, NodeSource::Official, NodeSource::Mirror],
     };
 
     report_progress(target, 3, "未检测到可用的 Node.js，正在下载运行环境...");
@@ -621,54 +627,157 @@ Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
     Err("无法下载 Node.js 运行环境，请检查网络连接后重试".to_string())
 }
 
+fn run_npm_progress(
+    node: &Path,
+    npm_cli: &Path,
+    registry: &str,
+    target: &ProgressTarget<'_>,
+    label: &str,
+    base_percent: u8,
+) -> std::io::Result<Output> {
+    let mut cmd = Command::new(node);
+    cmd.args([
+        npm_cli.to_string_lossy().as_ref(),
+        "install",
+        "-g",
+        "@deepseek-ai/dsh",
+        "--no-fund",
+        "--no-audit",
+        "--prefer-online",
+        "--fetch-retries",
+        "3",
+        "--fetch-retry-mintimeout",
+        "20000",
+        "--fetch-retry-maxtimeout",
+        "120000",
+        "--fetch-timeout",
+        "180000",
+        "--registry",
+        registry,
+    ]);
+
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+
+    let mut child = cmd.stderr(Stdio::piped()).spawn()?;
+    let stderr = child.stderr.take().expect("stderr piped");
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let _ = tx.send(line.trim().to_string());
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let mut err_lines: Vec<String> = Vec::new();
+    let mut last_error = String::new();
+    let started = Instant::now();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(line) => {
+                if !line.is_empty() {
+                    let lower = line.to_ascii_lowercase();
+                    if lower.contains("error")
+                        || lower.contains("etimedout")
+                        || lower.contains("econn")
+                        || lower.contains("failed")
+                        || lower.contains("err!")
+                    {
+                        last_error = line.clone();
+                    }
+                    err_lines.push(line);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let secs = started.elapsed().as_secs();
+                report_progress(
+                    target,
+                    base_percent,
+                    &format!("正在从{label}下载并安装 DeepSeek Harness... {secs}s"),
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let status = child.wait()?;
+    let detail = if !last_error.is_empty() {
+        last_error
+    } else {
+        err_lines
+            .iter()
+            .rev()
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Ok(Output {
+        status,
+        stdout: Vec::new(),
+        stderr: detail.into_bytes(),
+    })
+}
+
 fn install_auto(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<(), String> {
     let node = ensure_node(target, preferred)?;
     let npm_cli = find_npm_cli().ok_or("未找到 npm 组件，无法自动安装")?;
 
-    let registries = if preferred == NodeSource::Official {
-        [
+    let registries = match preferred {
+        NodeSource::Official => [
             ("官方 npm 源", NodeSource::Official.npm_registry()),
-            ("镜像 npm 源", NodeSource::Mirror.npm_registry()),
-        ]
-    } else {
-        [
-            ("镜像 npm 源", NodeSource::Mirror.npm_registry()),
+            ("阿里镜像源", NodeSource::Mirror.npm_registry()),
+            ("腾讯镜像源", NodeSource::Tencent.npm_registry()),
+        ],
+        NodeSource::Mirror => [
+            ("阿里镜像源", NodeSource::Mirror.npm_registry()),
             ("官方 npm 源", NodeSource::Official.npm_registry()),
-        ]
+            ("腾讯镜像源", NodeSource::Tencent.npm_registry()),
+        ],
+        NodeSource::Tencent => [
+            ("腾讯镜像源", NodeSource::Tencent.npm_registry()),
+            ("阿里镜像源", NodeSource::Mirror.npm_registry()),
+            ("官方 npm 源", NodeSource::Official.npm_registry()),
+        ],
     };
     let mut installed = false;
+    let mut last_detail = String::new();
     for (index, (label, registry)) in registries.iter().enumerate() {
+        let base = 45 + (index as u8 * 6);
         report_progress(
             target,
-            45 + (index as u8 * 7),
+            base,
             &format!("正在从{label}下载并安装 DeepSeek Harness..."),
         );
-        let out = run_capture({
-            let mut c = Command::new(&node);
-            c.args([
-                npm_cli.to_string_lossy().as_ref(),
-                "install",
-                "-g",
-                "@deepseek-ai/dsh",
-                "--no-fund",
-                "--no-audit",
-                "--registry",
-                registry,
-            ]);
-            c
-        })
-        .map_err(|e| format!("npm 安装执行失败：{e}"))?;
+        let out = run_npm_progress(&node, &npm_cli, registry, target, label, base)
+            .map_err(|e| format!("npm 安装执行失败：{e}"))?;
         if out.status.success() {
             installed = true;
             break;
         }
-        report_progress(target, 52 + (index as u8 * 7), &format!("{label}安装失败，准备重试..."));
+        last_detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        report_progress(target, base + 3, &format!("{label}安装失败，准备切换其他源..."));
     }
 
     if !installed {
-        return Err(
-            "npm 安装失败：官方 npm 源和镜像源均不可用，请检查网络连接后重试".to_string(),
-        );
+        let detail = if last_detail.is_empty() {
+            "未知错误".to_string()
+        } else {
+            last_detail.chars().take(300).collect()
+        };
+        return Err(format!(
+            "npm 安装失败：官方、阿里和腾讯源均不可用。最后错误：{detail}"
+        ));
     }
 
     let prefix_out = run_capture({

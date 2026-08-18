@@ -63,8 +63,8 @@ jobs:
 
           - 自动安装前可选择 Node.js 下载源（官方源 / 镜像源），安装时显示实时下载进度百分比。
             Choose the Node.js download source (official / mirror) before automatic installation, with a live download progress percentage.
-          - 所选源不可用时自动切换到另一源继续安装。
-            Automatically falls back to the other source if the selected one is unavailable.
+          - 官方源、阿里云镜像源、腾讯镜像源三级回退，任一源不可用自动切换，安装过程显示实时进度。
+            Three-level fallback across the official source, Aliyun mirror and Tencent mirror, with live progress shown during installation.
           - 未检测到 Node.js 时自动下载便携版运行环境，无需手动安装。
             Automatically downloads a portable Node.js runtime when it is missing; no manual installation required.
 

@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-harness-client"
-version = "0.1.5"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "rfd",

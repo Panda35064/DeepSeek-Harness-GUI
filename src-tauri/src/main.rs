@@ -23,8 +23,8 @@ const SERVER_URL: &str = "http://127.0.0.1:3080";
 const SERVER_PORT: u16 = 3080;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DEFAULT_REPO: &str = r"D:\Program Files\Dev\deepseek-harness";
-const NODE_VERSION: &str = "v20.20.2";
-const NODE_ARCHIVE: &str = "node-v20.20.2-win-x64.zip";
+const NODE_VERSION: &str = "v24.19.0";
+const NODE_ARCHIVE: &str = "node-v24.19.0-win-x64.zip";
 
 #[derive(Clone, Copy, PartialEq)]
 enum NodeSource {
@@ -202,6 +202,27 @@ fn find_npm_cli() -> Option<PathBuf> {
         .join("bin")
         .join("npm-cli.js");
     cli.is_file().then_some(cli)
+}
+
+// dsh 需要 Node.js >= 22.6（node:module 的 stripTypeScriptTypes），
+// 太旧的运行时会导致插件加载失败。
+fn node_version_ok(node: &Path) -> bool {
+    let Ok(out) = Command::new(node).arg("--version").output() else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let version = String::from_utf8_lossy(&out.stdout);
+    let version = version.trim().trim_start_matches('v');
+    let mut parts = version.split('.');
+    let (Ok(major), Ok(minor)) = (
+        parts.next().unwrap_or("").parse::<u32>(),
+        parts.next().unwrap_or("").parse::<u32>(),
+    ) else {
+        return false;
+    };
+    major > 22 || (major == 22 && minor >= 6)
 }
 
 fn repo_entry(root: &Path) -> Option<PathBuf> {
@@ -525,7 +546,7 @@ fn ensure_node(target: &ProgressTarget<'_>, preferred: NodeSource) -> Result<Pat
     let force_bootstrap = env::var_os("DSH_FORCE_NODE_BOOTSTRAP").is_some();
     if !force_bootstrap {
         if let Some(node) = find_node() {
-            if find_npm_cli().is_some() {
+            if find_npm_cli().is_some() && node_version_ok(&node) {
                 return Ok(node);
             }
         }
@@ -610,7 +631,7 @@ Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
         .map_err(|e| format!("下载 Node.js 失败：{e}"))?;
         if output.status.success() && runtime_node_path().is_file() {
             if let Some(node) = find_node() {
-                if find_npm_cli().is_some() {
+                if find_npm_cli().is_some() && node_version_ok(&node) {
                     report_progress(target, 42, "Node.js 运行环境准备完成");
                     return Ok(node);
                 }
@@ -694,8 +715,9 @@ fn run_npm_progress(
     let mut err_lines: Vec<String> = Vec::new();
     let mut last_error = String::new();
     let started = Instant::now();
+    let mut shown = 0u32;
     loop {
-        match rx.recv_timeout(Duration::from_secs(5)) {
+        match rx.recv_timeout(Duration::from_millis(1200)) {
             Ok(line) => {
                 if !line.is_empty() {
                     let lower = line.to_ascii_lowercase();
@@ -711,12 +733,18 @@ fn run_npm_progress(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                let secs = started.elapsed().as_secs();
-                report_progress(
-                    target,
-                    base_percent,
-                    &format!("正在从{label}下载并安装 DeepSeek Harness... {secs}s"),
-                );
+                // npm 不提供真实进度，按已耗时估算内部百分比（1%..95%），
+                // 并映射到整体进度区间 [base_percent, base_percent+34]。
+                let step = ((started.elapsed().as_millis() / 1200) as u32).min(95);
+                if step > shown {
+                    shown = step;
+                    let overall = base_percent + ((step as u16) * 34 / 100) as u8;
+                    report_progress(
+                        target,
+                        overall,
+                        &format!("正在从{label}下载并安装 DeepSeek Harness... {step}%"),
+                    );
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }

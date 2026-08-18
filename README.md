@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src-tauri/icons/deepseek-liquid-glass.svg" alt="DeepSeek Harness GUI icon" width="180">
+  <img src="src-tauri/icons/deepseek-liquid-glass.svg" alt="DeepSeek Harness GUI icon" width="280">
 </p>
 
 <h1 align="center">DeepSeek Harness GUI</h1>

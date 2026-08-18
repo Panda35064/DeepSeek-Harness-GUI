@@ -61,6 +61,18 @@ struct Installation {
 
 struct ServerState(Mutex<Option<Child>>);
 
+enum ProgressTarget<'a> {
+    App(&'a AppHandle),
+    Console,
+}
+
+fn report_progress(target: &ProgressTarget<'_>, percent: u8, message: &str) {
+    match target {
+        ProgressTarget::App(app) => emit_progress(app, percent, message),
+        ProgressTarget::Console => println!("[{percent:>3}%] {message}"),
+    }
+}
+
 fn app_data_dir() -> PathBuf {
     env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -436,7 +448,7 @@ fn run_capture(mut cmd: Command) -> std::io::Result<Output> {
     cmd.output()
 }
 
-fn install_git(app: &AppHandle) -> Result<(), String> {
+fn install_git(target: &ProgressTarget<'_>) -> Result<(), String> {
     let git = find_git().ok_or("未找到 Git，无法从源码安装")?;
     let node = find_node().ok_or("未找到 Node.js")?;
     let pnpm = find_pnpm().ok_or("未找到 pnpm，无法从源码安装")?;
@@ -448,7 +460,7 @@ fn install_git(app: &AppHandle) -> Result<(), String> {
                 "{DEFAULT_REPO} 已存在但不是有效的 DeepSeek Harness 仓库，请手动处理"
             ));
         }
-        emit_progress(app, 25, "正在克隆 DeepSeek Harness 源码...");
+        report_progress(target, 25, "正在克隆 DeepSeek Harness 源码...");
         let out = run_capture({
             let mut c = Command::new(&git);
             c.args([
@@ -470,7 +482,7 @@ fn install_git(app: &AppHandle) -> Result<(), String> {
         }
     }
 
-    emit_progress(app, 45, "正在安装依赖（pnpm install）...");
+    report_progress(target, 45, "正在安装依赖（pnpm install）...");
     let out = run_capture({
         let mut c = Command::new(&node);
         c.arg(&pnpm).arg("install").current_dir(repo);
@@ -485,7 +497,7 @@ fn install_git(app: &AppHandle) -> Result<(), String> {
         ));
     }
 
-    emit_progress(app, 65, "正在构建（pnpm build）...");
+    report_progress(target, 65, "正在构建（pnpm build）...");
     let out = run_capture({
         let mut c = Command::new(&node);
         c.arg(&pnpm).args(["run", "build"]).current_dir(repo);
@@ -501,15 +513,15 @@ fn install_git(app: &AppHandle) -> Result<(), String> {
     }
 
     save_config(DshKind::Repo, repo).map_err(|e| format!("保存配置失败：{e}"))?;
-    emit_progress(app, 85, "源码安装完成");
+    report_progress(target, 85, "源码安装完成");
     Ok(())
 }
 
-fn install_auto(app: &AppHandle) -> Result<(), String> {
+fn install_auto(target: &ProgressTarget<'_>) -> Result<(), String> {
     let node = find_node().ok_or("未找到 Node.js，请先安装 Node.js")?;
     let npm_cli = find_npm_cli().ok_or("未找到 npm 组件，无法自动安装")?;
 
-    emit_progress(app, 8, "正在下载并安装 DeepSeek Harness（npm 官方包）...");
+    report_progress(target, 8, "正在下载并安装 DeepSeek Harness（npm 官方包）...");
     let out = run_capture({
         let mut c = Command::new(&node);
         c.args([
@@ -525,8 +537,8 @@ fn install_auto(app: &AppHandle) -> Result<(), String> {
     .map_err(|e| format!("npm 安装执行失败：{e}"))?;
 
     if !out.status.success() {
-        emit_progress(app, 20, "npm 安装未成功，切换到源码安装...");
-        return install_git(app);
+        report_progress(target, 20, "npm 安装未成功，切换到源码安装...");
+        return install_git(target);
     }
 
     let prefix_out = run_capture({
@@ -537,8 +549,8 @@ fn install_auto(app: &AppHandle) -> Result<(), String> {
     .map_err(|e| format!("读取 npm 配置失败：{e}"))?;
     let prefix = String::from_utf8_lossy(&prefix_out.stdout).trim().to_string();
     if prefix.is_empty() {
-        emit_progress(app, 20, "npm 配置读取异常，切换到源码安装...");
-        return install_git(app);
+        report_progress(target, 20, "npm 配置读取异常，切换到源码安装...");
+        return install_git(target);
     }
 
     let pkg_root = PathBuf::from(&prefix)
@@ -546,12 +558,12 @@ fn install_auto(app: &AppHandle) -> Result<(), String> {
         .join("@deepseek-ai")
         .join("dsh");
     if !pkg_root.join("lib").join("bin.js").is_file() {
-        emit_progress(app, 20, "npm 安装完成但未找到入口，切换到源码安装...");
-        return install_git(app);
+        report_progress(target, 20, "npm 安装完成但未找到入口，切换到源码安装...");
+        return install_git(target);
     }
 
     save_config(DshKind::Npm, &pkg_root).map_err(|e| format!("保存配置失败：{e}"))?;
-    emit_progress(app, 80, "安装完成，正在启动服务...");
+    report_progress(target, 80, "安装完成，正在启动服务...");
     Ok(())
 }
 
@@ -581,7 +593,7 @@ fn pick_manual(app: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn dsh_install_auto(app: AppHandle) -> Result<(), String> {
     let handle = app.clone();
-    thread::spawn(move || match install_auto(&handle) {
+    thread::spawn(move || match install_auto(&ProgressTarget::App(&handle)) {
         Ok(()) => continue_bootstrap(handle),
         Err(e) => emit_error(&handle, &e),
     });
@@ -688,6 +700,20 @@ fn restart_server(app: AppHandle) {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--test-auto-install") {
+        println!("DeepSeek Harness automatic installation test");
+        match install_auto(&ProgressTarget::Console) {
+            Ok(()) => {
+                println!("PASS: automatic installation completed");
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("FAIL: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--restart") {

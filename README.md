@@ -43,6 +43,16 @@ npm ci
 npm exec -- tauri build
 ```
 
+### 测试自动安装流程
+
+如需只测试自动安装逻辑、不打开启动器窗口、不启动本地 3080 服务，可运行：
+
+~~~powershell
+Start-Process -FilePath .\src-tauri\target\release\deepseek-harness-client.exe -ArgumentList '--test-auto-install' -Wait -PassThru
+~~~
+
+测试成功时退出码为 0，失败时退出码非 0。
+
 构建产物位于：
 
 ```text

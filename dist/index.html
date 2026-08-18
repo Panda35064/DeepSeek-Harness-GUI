@@ -48,6 +48,13 @@
         color: #94a3b8;
         min-height: 18px;
       }
+      .hint {
+        margin-top: 8px;
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: #a3adbd;
+        min-height: 17px;
+      }
       .install-card { margin-top: 6px; }
       .install-card h2 { font-size: 16px; color: #0f172a; margin-bottom: 8px; font-weight: 600; }
       .install-card p { font-size: 13px; color: #64748b; line-height: 1.7; margin-bottom: 22px; }
@@ -107,6 +114,7 @@
       <div id="loadingWrap">
         <div class="ring"></div>
         <p class="step" id="stepText">正在检测运行环境...</p>
+        <p class="hint hidden" id="hintText"></p>
       </div>
       <div class="install-card hidden" id="installCard">
         <h2>未检测到 DeepSeek Harness</h2>
@@ -126,11 +134,93 @@
         var sub = document.getElementById('subText');
         var card = document.getElementById('installCard');
         var err = document.getElementById('errorText');
+        var hint = document.getElementById('hintText');
         var btnAuto = document.getElementById('btnAuto');
         var btnManual = document.getElementById('btnManual');
 
+        var isChinese = /^zh(?:-|$)/i.test(navigator.language || '');
+        var lang = isChinese ? 'zh' : 'en';
+        var copy = {
+          zh: {
+            sub: '正在启动本地服务',
+            checking: '正在检测运行环境...',
+            notFound: '未检测到 DeepSeek Harness',
+            choose: '未在默认安装路径或环境变量中找到 dsh。<br />请选择安装方式继续：',
+            auto: '自动安装',
+            manual: '手动选择路径',
+            installHint: '首次安装可能需要几分钟，请勿关闭窗口',
+            preparing: '正在准备自动安装...',
+            done: '安装完成，正在启动服务...',
+            failed: '操作失败，请重试'
+          },
+          en: {
+            sub: 'Starting local service',
+            checking: 'Checking the environment...',
+            notFound: 'DeepSeek Harness not found',
+            choose: 'dsh was not found in the default path or environment variables.<br />Choose an installation method to continue:',
+            auto: 'Install automatically',
+            manual: 'Choose a path',
+            installHint: 'The first installation may take a few minutes. Please keep this window open.',
+            preparing: 'Preparing automatic installation...',
+            done: 'Installation complete. Starting the service...',
+            failed: 'Operation failed. Please try again.'
+          }
+        }[lang];
+
+        document.documentElement.lang = isChinese ? 'zh-CN' : 'en';
+        sub.textContent = copy.sub;
+        step.textContent = copy.checking;
+        document.querySelector('#installCard h2').textContent = copy.notFound;
+        document.querySelector('#installCard > p').innerHTML = copy.choose;
+        btnAuto.textContent = copy.auto;
+        btnManual.textContent = copy.manual;
+
+        function localizeProgress(message) {
+          if (lang === 'zh' || !message) return message;
+          var translations = [
+            ['正在检测运行环境', 'Checking the environment'],
+            ['未检测到安装', 'No installation found'],
+            ['已找到 DeepSeek Harness，正在启动服务', 'DeepSeek Harness found. Starting the service'],
+            ['正在下载并安装 DeepSeek Harness（npm 官方包）', 'Downloading and installing DeepSeek Harness (official npm package)'],
+            ['npm 安装未成功，切换到源码安装', 'npm installation failed. Switching to source installation'],
+            ['npm 配置读取异常，切换到源码安装', 'Could not read npm configuration. Switching to source installation'],
+            ['npm 安装完成但未找到入口，切换到源码安装', 'npm installation completed but no entry point was found. Switching to source installation'],
+            ['正在克隆 DeepSeek Harness 源码', 'Cloning DeepSeek Harness source'],
+            ['正在安装依赖（pnpm install）', 'Installing dependencies (pnpm install)'],
+            ['正在构建（pnpm build）', 'Building (pnpm build)'],
+            ['源码安装完成', 'Source installation complete'],
+            ['安装完成，正在启动服务', copy.done],
+            ['服务已就绪', 'Service is ready'],
+            ['服务启动超时，请查看日志确认状态', 'Service startup timed out. Check the logs for details'],
+            ['检测到服务已在运行', 'Service is already running'],
+            ['正在启动本地服务', 'Starting local service']
+          ];
+          for (var i = 0; i < translations.length; i++) {
+            if (message.indexOf(translations[i][0]) === 0) return translations[i][1] + message.slice(translations[i][0].length);
+          }
+          return message;
+        }
+
+        function localizeError(message) {
+          if (lang === 'zh' || !message) return message || copy.failed;
+          var translations = [
+            ['未找到 Node.js', 'Node.js was not found'],
+            ['未找到 npm 组件，无法自动安装', 'The npm component was not found, so automatic installation is unavailable'],
+            ['未找到 Git，无法从源码安装', 'Git was not found, so source installation is unavailable'],
+            ['未找到 pnpm，无法从源码安装', 'pnpm was not found, so source installation is unavailable'],
+            ['npm 安装执行失败', 'npm installation failed'],
+            ['pnpm install 失败', 'pnpm install failed'],
+            ['pnpm build 失败', 'pnpm build failed']
+          ];
+          for (var i = 0; i < translations.length; i++) {
+            if (message.indexOf(translations[i][0]) === 0) return translations[i][1] + message.slice(translations[i][0].length);
+          }
+          return message;
+        }
+
         function showError(msg) {
-          err.textContent = msg || '操作失败，请重试';
+          err.textContent = localizeError(msg);
+          hint.classList.add('hidden');
           btnAuto.disabled = false;
           btnManual.disabled = false;
         }
@@ -146,7 +236,7 @@
         if (tauri && tauri.event) {
           tauri.event.listen('dsh-progress', function (e) {
             var p = e.payload || {};
-            if (p.message) step.textContent = p.message;
+            if (p.message) step.textContent = localizeProgress(p.message);
           }).catch(function () {});
           tauri.event.listen('dsh-need-install', function () {
             showInstall();
@@ -163,7 +253,9 @@
             title.classList.remove('hidden');
             sub.classList.remove('hidden');
             wrap.classList.remove('hidden');
-            step.textContent = '正在准备自动安装...';
+            step.textContent = copy.preparing;
+            hint.textContent = copy.installHint;
+            hint.classList.remove('hidden');
             tauri.core.invoke('dsh_install_auto').catch(showError);
           });
           btnManual.addEventListener('click', function () {

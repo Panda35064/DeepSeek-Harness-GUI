@@ -23,6 +23,8 @@ const SERVER_URL: &str = "http://127.0.0.1:3080";
 const SERVER_PORT: u16 = 3080;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DEFAULT_REPO: &str = r"D:\Program Files\Dev\deepseek-harness";
+const NODE_VERSION: &str = "v20.20.2";
+const NODE_ARCHIVE: &str = "node-v20.20.2-win-x64.zip";
 
 #[derive(Clone, serde::Serialize)]
 struct ProgressPayload {
@@ -88,6 +90,13 @@ fn log_path() -> PathBuf {
     app_data_dir().join("logs").join("dsh.log")
 }
 
+fn runtime_node_path() -> PathBuf {
+    app_data_dir()
+        .join("runtime")
+        .join("node")
+        .join("node.exe")
+}
+
 fn load_config() -> Option<Config> {
     let path = config_path();
     if !path.is_file() {
@@ -131,15 +140,15 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 }
 
 fn find_node() -> Option<PathBuf> {
-    let candidates = [
-        r"D:\Program Files\Dev\Node.js\node.exe",
-        r"C:\Program Files\nodejs\node.exe",
-        r"C:\Program Files (x86)\nodejs\node.exe",
+    let candidates = vec![
+        runtime_node_path(),
+        PathBuf::from(r"D:\Program Files\Dev\Node.js\node.exe"),
+        PathBuf::from(r"C:\Program Files\nodejs\node.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\nodejs\node.exe"),
     ];
     for c in candidates {
-        let p = PathBuf::from(c);
-        if p.is_file() {
-            return Some(p);
+        if c.is_file() {
+            return Some(c);
         }
     }
     find_in_path("node.exe")
@@ -448,9 +457,101 @@ fn run_capture(mut cmd: Command) -> std::io::Result<Output> {
     cmd.output()
 }
 
+fn run_powershell(command: &str) -> std::io::Result<Output> {
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"])
+        .arg(command);
+    run_capture(cmd)
+}
+
+fn powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn ensure_node(target: &ProgressTarget<'_>) -> Result<PathBuf, String> {
+    let force_bootstrap = env::var_os("DSH_FORCE_NODE_BOOTSTRAP").is_some();
+    if !force_bootstrap {
+        if let Some(node) = find_node() {
+            if find_npm_cli().is_some() {
+                return Ok(node);
+            }
+        }
+    }
+
+    let runtime_root = app_data_dir().join("runtime");
+    let runtime_dir = runtime_root.join("node");
+    let archive = runtime_root.join(NODE_ARCHIVE);
+    let staging = runtime_root.join("node-staging");
+    let urls = [
+        (
+            "官方源",
+            format!(
+                "https://nodejs.org/download/release/{NODE_VERSION}/{NODE_ARCHIVE}"
+            ),
+        ),
+        (
+            "镜像源",
+            format!("https://npmmirror.com/mirrors/node/{NODE_VERSION}/{NODE_ARCHIVE}"),
+        ),
+    ];
+
+    report_progress(target, 3, "未检测到可用的 Node.js，正在下载运行环境...");
+    for (label, url) in urls {
+        report_progress(
+            target,
+            4,
+            &format!("正在从{label}下载 Node.js 运行环境..."),
+        );
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $staging | Out-Null
+Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive
+Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
+$root = Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1
+if ($null -eq $root -or -not (Test-Path -LiteralPath (Join-Path $root.FullName 'node.exe'))) {
+  throw 'Downloaded Node.js archive did not contain node.exe'
+}
+Remove-Item -LiteralPath $runtimeDir -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+Copy-Item -Path (Join-Path $root.FullName '*') -Destination $runtimeDir -Recurse -Force
+Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+"#;
+        let command = format!(
+            "$url={}; $archive={}; $runtimeRoot={}; $runtimeDir={}; $staging={}; {}",
+            powershell_literal(&url),
+            powershell_literal(&archive.to_string_lossy()),
+            powershell_literal(&runtime_root.to_string_lossy()),
+            powershell_literal(&runtime_dir.to_string_lossy()),
+            powershell_literal(&staging.to_string_lossy()),
+            script
+        );
+        let output = run_powershell(&command)
+        .map_err(|e| format!("下载 Node.js 失败：{e}"))?;
+        if output.status.success() && runtime_node_path().is_file() {
+            if let Some(node) = find_node() {
+                if find_npm_cli().is_some() {
+                    report_progress(target, 6, "Node.js 运行环境准备完成");
+                    return Ok(node);
+                }
+            }
+        }
+        let detail = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .last()
+            .unwrap_or("未知网络或解压错误")
+            .to_string();
+        report_progress(target, 4, &format!("{label}下载失败：{detail}"));
+    }
+
+    Err("无法下载 Node.js 运行环境，请检查网络连接后重试".to_string())
+}
+
 fn install_git(target: &ProgressTarget<'_>) -> Result<(), String> {
     let git = find_git().ok_or("未找到 Git，无法从源码安装")?;
-    let node = find_node().ok_or("未找到 Node.js")?;
+    let node = ensure_node(target)?;
     let pnpm = find_pnpm().ok_or("未找到 pnpm，无法从源码安装")?;
 
     let repo = Path::new(DEFAULT_REPO);
@@ -518,25 +619,43 @@ fn install_git(target: &ProgressTarget<'_>) -> Result<(), String> {
 }
 
 fn install_auto(target: &ProgressTarget<'_>) -> Result<(), String> {
-    let node = find_node().ok_or("未找到 Node.js，请先安装 Node.js")?;
+    let node = ensure_node(target)?;
     let npm_cli = find_npm_cli().ok_or("未找到 npm 组件，无法自动安装")?;
 
-    report_progress(target, 8, "正在下载并安装 DeepSeek Harness（npm 官方包）...");
-    let out = run_capture({
-        let mut c = Command::new(&node);
-        c.args([
-            npm_cli.to_string_lossy().as_ref(),
-            "install",
-            "-g",
-            "@deepseek-ai/dsh",
-            "--no-fund",
-            "--no-audit",
-        ]);
-        c
-    })
-    .map_err(|e| format!("npm 安装执行失败：{e}"))?;
+    let registries = [
+        ("官方 npm 源", "https://registry.npmjs.org"),
+        ("镜像 npm 源", "https://registry.npmmirror.com"),
+    ];
+    let mut installed = false;
+    for (index, (label, registry)) in registries.iter().enumerate() {
+        report_progress(
+            target,
+            8 + (index as u8 * 6),
+            &format!("正在从{label}下载并安装 DeepSeek Harness..."),
+        );
+        let out = run_capture({
+            let mut c = Command::new(&node);
+            c.args([
+                npm_cli.to_string_lossy().as_ref(),
+                "install",
+                "-g",
+                "@deepseek-ai/dsh",
+                "--no-fund",
+                "--no-audit",
+                "--registry",
+                registry,
+            ]);
+            c
+        })
+        .map_err(|e| format!("npm 安装执行失败：{e}"))?;
+        if out.status.success() {
+            installed = true;
+            break;
+        }
+        report_progress(target, 14 + (index as u8 * 6), &format!("{label}安装失败，准备重试..."));
+    }
 
-    if !out.status.success() {
+    if !installed {
         report_progress(target, 20, "npm 安装未成功，切换到源码安装...");
         return install_git(target);
     }
@@ -701,6 +820,9 @@ fn restart_server(app: AppHandle) {
 
 fn main() {
     if std::env::args().any(|arg| arg == "--test-auto-install") {
+        if std::env::args().any(|arg| arg == "--force-node-bootstrap") {
+            std::env::set_var("DSH_FORCE_NODE_BOOTSTRAP", "1");
+        }
         println!("DeepSeek Harness automatic installation test");
         match install_auto(&ProgressTarget::Console) {
             Ok(()) => {

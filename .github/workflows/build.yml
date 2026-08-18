@@ -32,6 +32,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Include MinGW runtime DLLs
+        shell: pwsh
+        run: |
+          $gcc = (Get-Command gcc.exe).Source
+          $runtimeDir = Split-Path $gcc
+          $targetDir = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/release'
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          @('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll') | ForEach-Object {
+            Copy-Item (Join-Path $runtimeDir $_) $targetDir -Force
+          }
+
       - name: Build Tauri application
         run: npm exec -- tauri build
 

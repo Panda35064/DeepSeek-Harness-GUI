@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DeepSeek Harness",
+  "productName": "DeepSeek Harness GUI",
   "version": "0.1.0",
   "identifier": "com.deepseek.harness-client",
   "build": {
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "DeepSeek Harness",
+        "title": "DeepSeek Harness GUI",
         "width": 1280,
         "height": 860,
         "minWidth": 960,
@@ -30,6 +30,9 @@
     "targets": ["nsis"],
     "useLocalToolsDir": true,
     "icon": ["icons/icon.png"],
+    "resources": {
+      "target/release/*.dll": "."
+    },
     "windows": {
       "nsis": {
         "languages": ["SimpChinese", "English"],

@@ -1,0 +1,12 @@
+{
+  "name": "deepseek-harness-client",
+  "private": true,
+  "version": "0.1.0",
+  "description": "DeepSeek Harness desktop client (Tauri)",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}

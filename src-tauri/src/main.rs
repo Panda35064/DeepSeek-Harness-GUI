@@ -661,6 +661,18 @@ fn run_npm_progress(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
 
+    // 依赖的 install/prebuild 脚本（如 koffi、node-pty）通过 cmd 调用 node，
+    // 必须把便携 Node 所在目录注入 PATH，否则在未安装 Node 的机器上会失败。
+    if let Some(node_dir) = node.parent() {
+        if let Some(path_var) = env::var_os("PATH") {
+            let mut paths = env::split_paths(&path_var).collect::<Vec<_>>();
+            paths.insert(0, node_dir.to_path_buf());
+            if let Ok(joined) = env::join_paths(&paths) {
+                cmd.env("PATH", joined);
+            }
+        }
+    }
+
     let mut child = cmd.stderr(Stdio::piped()).spawn()?;
     let stderr = child.stderr.take().expect("stderr piped");
     let (tx, rx) = mpsc::channel::<String>();
